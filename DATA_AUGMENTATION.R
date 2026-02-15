@@ -10,11 +10,12 @@ R_t <- (SPY_adj / lag(SPY_adj)) - 1
 y <- R_t[-1] # Remove NA
 
 # Priors
-a0 <- 1 # sample size || MUST BE POSITIVE
-a1 <- 8 # skewness
-a2 <- 7 # mean
-a3 <- 6 # volatility || MUST BE POSITIVE
-a4 <- 15 # tail heaviness || MUST BE POSITIVE
+a0 <- 0.01 # sample size || MUST BE POSITIVE
+a1 <- 0 # skewness
+a2 <- 0 # mean
+a3 <- 0.01 # volatility || MUST BE POSITIVE
+a4 <- 0.01 # tail heaviness || MUST BE POSITIVE
+
 mu <- mean(y) # best guess
 delta <- sd(y) # best guess
 beta <- 0 # neutral symmetric distribution
@@ -22,14 +23,14 @@ gamma <- 1
 alpha <- sqrt(beta^2 + gamma^2) # page 3 
 
 # MCMC Gibbs
-mcmc_samples <- matrix(NA, nrow = 20000, ncol = 4) # create a matrix to store all the mcmc samples
+mcmc_samples <- matrix(NA, nrow = 20000, ncol = 4) # create a matrix to store all the MCMC samples
 colnames(mcmc_samples) <- c("m", "b", "d", "a") # give names to the matrix
 
 for (i in 1:20000) {
   
   scale_val <- (y - mu)^2 + delta^2 # z parameter page 5
   psi_val <- alpha^2 # z parameter page 5
-  z <- rgig(n = length(y), lambda = -1, chi = scale_val, psi = psi_val) # compute z for each y using GIG distribution page 5
+  z <- rgig(n = length(y), lambda = -1, chi = scale_val, psi = psi_val) # compute z for each y using GIG distribution page 5 hidden volatility
   
   n_obs <- length(y) # How many observations we got
   a0_prime <- a0 + n_obs # page 3
@@ -48,9 +49,9 @@ for (i in 1:20000) {
   # So it means they aren't indepented thus we have ρ so we need to use cholesky transformation to get the correlated samples of μ and β
   # So we use z standard to generate 2 different normal random variables and then we use the cholesky transformation to get the correlated samples of μ and β
   # mu scales the first raw number to have the correct mean and standard deviation
-  #then beta scales the second raw number to have the correct mean and standard deviation,
-  #but also adds a term that is correlated with the first raw number to introduce the correlation between mu and beta
-  
+  # then beta scales the second raw number to have the correct mean and standard deviation,
+  # but also adds a term that is correlated with the first raw number to introduce the correlation between mu and beta
+   
   z_standard <- rnorm(2)
   mu <- mu_tilde + sd_mu * z_standard[1]
   beta <- beta_tilde + sd_beta * (rho * z_standard[1] + sqrt(1 - rho^2) * z_standard[2]) # cholesky transformation
@@ -93,7 +94,6 @@ hist(y, breaks = 50, probability = TRUE,
      ylim = c(0, y_max))
 
 # 3. High-Resolution NIG Curve
-# Using 500 points (x_range) makes the sharp peak look smoother
 lines(x_range, dnig(x_range, 
                     alpha = p_means["a"], 
                     beta = p_means["b"], 
@@ -113,3 +113,6 @@ legend("topright",
        lwd = c(8, 2.5, 2, 1), 
        lty = c(1, 1, 2, 3),
        cex = 0.8)
+expected_daily_return <- p_means["m"] + (p_means["d"] * p_means["b"]) / p_gamma
+cat("Expected Daily Return:", expected_daily_return * 100, "%\n")
+
