@@ -7,6 +7,7 @@ library(fBasics)
 library(MASS)
 library(moments)
 library(tseries)
+set.seed(42) # for reproducibility
 
 # Get SPY data for the MCMC
 getSymbols("SPY", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
@@ -55,7 +56,7 @@ mu_ig <- delta/gamma # prior mean for the μ parameter in the IG distribution
 for (i in 1:n_iter) {
   
   # Z draws
-  residuals <- y - X %*% b[1:ncol(X)] # Calculate residuals
+  residuals <- y - X %*% b[1:ncol(X)] # Calculate residuals y-μ1
   q_val <- 1 + (residuals/delta)^2
   alpha_param <- sqrt(gamma^2 + b[ncol(X)+1]^2) # alpha parameter
   z <- rgig(n = length(y), lambda = -1, chi = delta * sqrt(q_val), psi = alpha_param) # Sample z from GIG distribution
@@ -103,60 +104,85 @@ gamma_post <- gamma_store[keep_idx]
 delta_post <- delta_store[keep_idx]
 z_post_mean <- colMeans(z_store[keep_idx, ])
 
-# Trace Plots
-par(mfrow=c(2,2))
-plot(beta_post[,1], type='l', main='Trace Plot for Intercept', xlab='Iteration', ylab='Value')
-plot(beta_post[,2], type='l', main='Trace Plot for Slope', xlab='Iteration', ylab='Value')
-plot(gamma_post, type='l', main='Trace Plot for Gamma', xlab='Iteration', ylab='Value')
-plot(delta_post, type='l', main='Trace Plot for Delta', xlab='Iteration', ylab='Value')
+# Predictive Distribution
+#Assum Yield_tomorrow = 0 ( we have to do a regression model for it )
 
-# Plot zi over time
-par(mfrow=c(1,1))
-plot(z_post_mean, type='l', main='Mean Z values over time', xlab='Time', ylab='Mean Z value')
+yield_tomorrow <- 0  # assume no change
+n_sim <- nrow(beta_post)
+scale_factor <- var(y) / mean(z_post_mean)
+
+predictions <- rep(NA, n_sim)
+for(j in 1:n_sim){
+  z_new <- rgig(1, lambda=-1, chi=delta_post[j]^2, psi=gamma_post[j]^2 + beta_post[j,3]^2)
+  z_scaled <- z_new * scale_factor
+  mu_j <- beta_post[j,1] + beta_post[j,2]*0 + beta_post[j,3]*z_scaled
+  predictions[j] <- rnorm(1, mu_j, sqrt(z_scaled))
+}
+
+cat("Tomorrow's SPY return forecast:\n")
+cat("Expected:  ", round(mean(predictions)*100, 3), "%\n")
+cat("95% CI:    ", round(quantile(predictions, c(0.025,0.975))*100, 3), "%\n")
+cat("5% VaR:    ", round(quantile(predictions, 0.05)*100, 3), "%\n")
+
+# # Trace Plots
+
+# par(mfrow=c(2,2))
+# plot(beta_post[,1], type='l', main='Trace Plot for Intercept', xlab='Iteration', ylab='Value')
+# plot(beta_post[,2], type='l', main='Trace Plot for Slope', xlab='Iteration', ylab='Value')
+# plot(gamma_post, type='l', main='Trace Plot for Gamma', xlab='Iteration', ylab='Value')
+# plot(delta_post, type='l', main='Trace Plot for Delta', xlab='Iteration', ylab='Value')
+# 
+# # Plot zi over time
+# par(mfrow=c(1,1))
+# plot(z_post_mean, type='l', main='Mean Z values over time', xlab='Time', ylab='Mean Z value')
+# 
+# 
+# # Posterior Density Plots with statistics
+# par(mfrow=c(2,2))
+# 
+# # Intercept
+# plot(density(beta_post[,1]), main='Posterior Density for Intercept', xlab='Value', ylab='Density')
+# abline(v=mean(beta_post[,1]), col='red', lwd=2)
+# abline(v=quantile(beta_post[,1], c(0.025, 0.975)), col='blue', lwd=2, lty=2)
+# 
+# # Slope
+# plot(density(beta_post[,2]), main='Posterior Density for Slope', xlab='Value', ylab='Density')
+# abline(v=mean(beta_post[,2]), col='red', lwd=2)
+# abline(v=quantile(beta_post[,2], c(0.025, 0.975)), col='blue', lwd=2, lty=2)
+# 
+# # Gamma
+# plot(density(gamma_post), main='Posterior Density for Gamma', xlab='Value', ylab='Density')
+# abline(v=mean(gamma_post), col='red', lwd=2)
+# abline(v=quantile(gamma_post, c(0.025, 0.975)), col='blue', lwd=2, lty=2)
+# 
+# # Delta
+# plot(density(delta_post), main='Posterior Density for Delta', xlab='Value', ylab='Density')
+# abline(v=mean(delta_post), col='red', lwd=2)
+# abline(v=quantile(delta_post, c(0.025, 0.975)), col='blue', lwd=2, lty=2)
+# 
+# # Summary
+# 
+# # Summary for Regression Coefficients (Intercept and Beta/Skewness)
+# # We calculate Mean, and the 95% Credible Interval (2.5% and 97.5%)
+# beta_summary <- data.frame(
+#   Mean = colMeans(beta_post),
+#   Lower_95 = apply(beta_post, 2, quantile, probs = 0.025),
+#   Upper_95 = apply(beta_post, 2, quantile, probs = 0.975)
+# )
+# rownames(beta_summary) <- c("Intercept", "Yield Change", "Skewness (Beta)")
+# 
+# # Summary for NIG Scale and Shape
+# nig_summary <- data.frame(
+#   Parameter = c("Gamma (Shape)", "Delta (Scale)"),
+#   Mean = c(mean(gamma_post), mean(delta_post)),
+#   Lower_95 = c(quantile(gamma_post, 0.025), quantile(delta_post, 0.025)),
+#   Upper_95 = c(quantile(gamma_post, 0.975), quantile(delta_post, 0.975))
+# )
+# 
+# print(beta_summary)
+# print(nig_summary)
 
 
-# Posterior Density Plots with statistics
-par(mfrow=c(2,2))
 
-# Intercept
-plot(density(beta_post[,1]), main='Posterior Density for Intercept', xlab='Value', ylab='Density')
-abline(v=mean(beta_post[,1]), col='red', lwd=2)
-abline(v=quantile(beta_post[,1], c(0.025, 0.975)), col='blue', lwd=2, lty=2)
 
-# Slope
-plot(density(beta_post[,2]), main='Posterior Density for Slope', xlab='Value', ylab='Density')
-abline(v=mean(beta_post[,2]), col='red', lwd=2)
-abline(v=quantile(beta_post[,2], c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Gamma
-plot(density(gamma_post), main='Posterior Density for Gamma', xlab='Value', ylab='Density')
-abline(v=mean(gamma_post), col='red', lwd=2)
-abline(v=quantile(gamma_post, c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Delta
-plot(density(delta_post), main='Posterior Density for Delta', xlab='Value', ylab='Density')
-abline(v=mean(delta_post), col='red', lwd=2)
-abline(v=quantile(delta_post, c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Summary
-
-# Summary for Regression Coefficients (Intercept and Beta/Skewness)
-# We calculate Mean, and the 95% Credible Interval (2.5% and 97.5%)
-beta_summary <- data.frame(
-  Mean = colMeans(beta_post),
-  Lower_95 = apply(beta_post, 2, quantile, probs = 0.025),
-  Upper_95 = apply(beta_post, 2, quantile, probs = 0.975)
-)
-rownames(beta_summary) <- c("Intercept", "Yield Change", "Skewness (Beta)")
-
-# Summary for NIG Scale and Shape
-nig_summary <- data.frame(
-  Parameter = c("Gamma (Shape)", "Delta (Scale)"),
-  Mean = c(mean(gamma_post), mean(delta_post)),
-  Lower_95 = c(quantile(gamma_post, 0.025), quantile(delta_post, 0.025)),
-  Upper_95 = c(quantile(gamma_post, 0.975), quantile(delta_post, 0.975))
-)
-
-print(beta_summary)
-print(nig_summary)
 
