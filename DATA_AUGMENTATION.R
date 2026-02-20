@@ -2,12 +2,17 @@
 library(quantmod)
 library(GIGrvg)
 library(fBasics)
+library(matrixStats) # for colmeans
+
+set.seed(42) #for reproducibility
+
+ticker <- "SPY"
+start_date <- "2015-12-01"
+end_date <- "2025-12-31"
 
 # Get SPY data for the MCMC
-getSymbols("SPY", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
-SPY_adj <- Ad(SPY)
-R_t <- (SPY_adj / lag(SPY_adj)) - 1
-y <- R_t[-1] # Remove NA
+data_raw <- getSymbols(ticker, from = start_date, to = end_date, periodicity = "daily", auto.assign = FALSE)
+y <- dailyReturn(Ad(data_raw))[-1]   # remove NA
 
 # Priors
 a0 <- 0.01 # sample size || MUST BE POSITIVE
@@ -19,20 +24,25 @@ a4 <- 0.01 # tail heaviness || MUST BE POSITIVE
 mu <- mean(y) # best guess
 delta <- sd(y) # best guess
 beta <- 0 # neutral symmetric distribution
-gamma <- 1
+gamma <- 0.01 * sd(y)
 alpha <- sqrt(beta^2 + gamma^2) # page 3 
 
+iterations <- 100000
+burn      <- 20000
+thin      <- 100
+
 # MCMC Gibbs
-mcmc_samples <- matrix(NA, nrow = 20000, ncol = 4) # create a matrix to store all the MCMC samples
+mcmc_samples <- matrix(NA, nrow = iterations, ncol = 4) # create a matrix to store all the MCMC samples of variables
 colnames(mcmc_samples) <- c("m", "b", "d", "a") # give names to the matrix
 
-for (i in 1:20000) {
+n_obs <- length(y)
+
+for (i in 1:iterations) {
   
   scale_val <- (y - mu)^2 + delta^2 # z parameter page 5
   psi_val <- alpha^2 # z parameter page 5
   z <- rgig(n = length(y), lambda = -1, chi = scale_val, psi = psi_val) # compute z for each y using GIG distribution page 5 hidden volatility
-  
-  n_obs <- length(y) # How many observations we got
+    
   a0_prime <- a0 + n_obs # page 3
   a1_prime <- a1 + sum(y) # page 3          
   a2_prime <- a2 + sum(y / z) # page 3      
@@ -42,6 +52,7 @@ for (i in 1:20000) {
   rho <- -a0_prime / (2 * sqrt(a3_prime * a4_prime)) #page 4
   sd_mu <- sqrt(1 / (2 * (1 - rho^2) * a4_prime)) # page 4
   sd_beta <- sqrt(1 / (2 * (1 - rho^2) * a3_prime)) # page 4
+  
   mu_tilde <- (a2_prime - (a0_prime * a1_prime) / (2 * a3_prime)) * (sd_mu^2) # page 4
   beta_tilde <- (a1_prime - (a0_prime * a2_prime) / (2 * a4_prime)) * (sd_beta^2) # page 4
   
@@ -66,53 +77,61 @@ for (i in 1:20000) {
   
   # Simple rejection sampling for truncation:
   
-  repeat { # we use repeat cause we need γ > 0
+  repeat # we use repeat cause we need γ > 0 and we don't have a closed form for the truncated distribution, so we just keep sampling until we get a positive value for γ
+  {
     gamma <- rnorm(1, mean = gamma_mean, sd = gamma_sd)
-    if (gamma > 0) break
+    if (gamma > 0) break # stop when it is positive
   }
+  
   alpha <- sqrt(gamma^2 + beta^2)
   mcmc_samples[i, ] <- c(mu, beta, delta, alpha)
 }
 
-final_estimates <- mcmc_samples[seq(2001, 10000, by = 50), ] # thinning every 50th and burn in is 2000
-colMeans(final_estimates)
+# Simulate from posterior median
 
-# plot 
+post_samples <- mcmc_samples[seq((burn + 1), iterations, by = thin), ] # thinning every 50th and burn in is 2000
+p_median <- apply(post_samples, 2, median) # find the medians in all columns
 
-# Expanding xlim slightly beyond min/max helps see the tail behavior
-x_range <- seq(min(y) - 0.02, max(y) + 0.02, length.out = 500) 
-y_max <- max(hist(y, breaks = 50, plot = FALSE)$density) * 1.1
+simulated_data <- rnig(n = length(y),
+                         alpha = p_median["a"],
+                         beta = p_median["b"],
+                         delta = p_median["d"],
+                         mu = p_median["m"])
+  
 
-# 2. Enhanced Plotting
+
+# plot NIG distribution from the median simulation
 par(mfrow = c(1, 1), mar = c(5, 5, 4, 2))
-hist(y, breaks = 50, probability = TRUE, 
-     main = "SPY Daily Simple Returns vs. Fitted NIG",
-     xlab = "Daily Simple Return (decimal)", 
+hist(simulated_data, breaks = 50, probability = TRUE,
+     main = "Simulated SPY Daily Simple Returns from NIG (Median Parameters)",
+     xlab = "Daily Simple Return (decimal)",
      ylab = "Density",
-     col = "lightgray", border = "white",
-     xlim = c(min(x_range), max(x_range)),
-     ylim = c(0, y_max))
+     col = "lightblue", border = "white")
 
-# 3. High-Resolution NIG Curve
-lines(x_range, dnig(x_range, 
-                    alpha = p_means["a"], 
-                    beta = p_means["b"], 
-                    delta = p_means["d"], 
-                    mu = p_means["m"]), 
+# Posterior NIG curve 
+x_range <- seq(min(simulated_data) - 0.02, max(simulated_data) + 0.02, length.out = 500)
+y_max <- max(hist(simulated_data, breaks = 50, plot = FALSE)$density) * 1.1
+lines(x_range, dnig(x_range,
+                    alpha = p_median["a"],
+                    beta = p_median["b"],
+                    delta = p_median["d"],
+                    mu = p_median["m"]),
       col = "red", lwd = 2.5)
 
-# 4. Add the 'Identity' line (0% return) and Expected Return
-abline(v = 0, col = "black", lty = 3) # Break-even line
-p_gamma <- sqrt(p_means["a"]^2 - p_means["b"]^2)
-expected_y <- p_means["m"] + (p_means["d"] * p_means["b"]) / p_gamma
-abline(v = expected_y, col = "blue", lwd = 2, lty = 2) # Mean return
+# Compare summary statistics
+cat("\n=== COMPARISON ===\n")
+cat("Real data:\n")
+cat("  Mean:     ", round(mean(y), 6), "\n")
+cat("  Std Dev:  ", round(sd(y), 6), "\n")
+cat("  Skewness: ", round(skewness(y), 3), "\n")
+cat("  Kurtosis: ", round(kurtosis(y), 3), "\n")
 
-legend("topright", 
-       legend = c("SPY Returns", "Fitted NIG", "Mean Return", "0% Return"), 
-       col = c("lightgray", "red", "blue", "black"), 
-       lwd = c(8, 2.5, 2, 1), 
-       lty = c(1, 1, 2, 3),
-       cex = 0.8)
-expected_daily_return <- p_means["m"] + (p_means["d"] * p_means["b"]) / p_gamma
-cat("Expected Daily Return:", expected_daily_return * 100, "%\n")
+cat("\nSimulated data:\n")
+cat("  Mean:     ", round(mean(simulated_data), 6), "\n")
+cat("  Std Dev:  ", round(sd(simulated_data), 6), "\n")
+cat("  Skewness: ", round(skewness(simulated_data), 3), "\n")
+cat("  Kurtosis: ", round(kurtosis(simulated_data), 3), "\n")
+
+# median -> simulate -> resaults 
+# change teh parameters and how the dsitribuyions change 
 

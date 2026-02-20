@@ -26,6 +26,8 @@ common_dates <- intersect(index(yield_change), index(R_t[-1]))
 yield_aligned <- as.vector(yield_change[common_dates])
 y <- as.vector(R_t[-1][common_dates])
 n <- length(y)
+ADF_result <- adf.test(y)
+cat("ADF Test p-value:", ADF_result$p.value, "\n")
 
 
 # Matrix X and Y
