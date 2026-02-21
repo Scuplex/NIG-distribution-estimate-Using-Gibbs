@@ -1,121 +1,115 @@
+# ========================================================
+# Robust Bayesian NIG - Gamma-TN Scheme for SPY
+# ========================================================
+
 library(quantmod)
-library(GIGrvg)   # rgig
-library(MASS)     # mvrnorm
+library(GIGrvg)
+library(fBasics)
+library(MASS)
 
 set.seed(42)
 
-# ====================== DATA (SPY daily returns) ======================
-getSymbols("TSLA", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
-SPY_adj <- Ad(TSLA)
-y <- as.numeric(dailyReturn(SPY_adj)[-1])   # simple returns, drop first NA
+# Data
+getSymbols("SPY", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
+y <- as.numeric(dailyReturn(Ad(SPY))[-1])
 n <- length(y)
 
-cat("Number of observations:", n, "\n")
+# Stronger, more stable priors for daily returns
+alpha0 <- 8.0      # shape for δ² ~ Gamma
+beta0  <- 4.0      # rate for δ²
+omega  <- 0.0
+theta  <- 3.0      # variance of γ|δ
 
-# ====================== PRIORS (Gamma-GIG - same as paper) ======================
-xi    <- 0.01      # phi ~ Gamma(xi, chi)
-chi   <- 0.01
-eta   <- 5         # prior mean for mu_ig
-omega <- 0.001
-
-# Diffuse prior on (μ, β)  -- variances = 50 as in the FTARET example
 prior_mean_beta <- c(0, 0)
-prior_prec_beta <- diag(1/50, 2)          # 2 parameters: μ and β_skew
+prior_prec_beta <- diag(1/30, 2)   # slightly stronger prior
 
-# ====================== MCMC SETTINGS ======================
-n_iter <- 100000
-burn   <- 20000
-thin   <- 50
-keep_idx <- seq(burn + 1, n_iter, by = thin)
+# MCMC
+n_iter <- 120000
+burn   <- 30000
+thin   <- 60
 
-# Storage
-beta_store  <- matrix(NA, n_iter, 2)      # columns: mu, beta_skew
+beta_store  <- matrix(NA, n_iter, 2)
 gamma_store <- numeric(n_iter)
 delta_store <- numeric(n_iter)
 
-# Initial values
+# Reasonable initial values
 mu    <- mean(y)
-beta  <- 0
-gamma <- 1
-delta <- 1
-mu_ig <- delta / gamma
-phi   <- 1
+beta  <- -0.1
+gamma <- 40
+delta <- sd(y) * 1.5
 
-# ====================== MCMC LOOP (Gamma-GIG) ======================
 for (i in 1:n_iter) {
   
-  # ----- 1. Sample latent z_i -----
-  residuals <- y - mu                       # y - μ   (no covariates)
-  chi_z     <- residuals^2 + delta^2        # δ_GIG²
-  psi_z     <- gamma^2 + beta^2             # α²
-  z <- rgig(n = n, lambda = -1, chi = chi_z, psi = psi_z)
+  # 1. Latent z
+  z <- rgig(n, lambda = -1, chi = (y - mu)^2 + delta^2, psi = gamma^2 + beta^2)
   
-  # ----- 2. Update (μ, β) via heteroscedastic regression -----
-  X_full <- cbind(1, z)                     # design matrix: intercept + z
-  w      <- 1 / z
-  D_inv  <- t(X_full * w) %*% X_full + prior_prec_beta
-  D      <- solve(D_inv)
-  d      <- t(X_full) %*% (y * w) + prior_prec_beta %*% prior_mean_beta
-  b      <- mvrnorm(1, mu = D %*% d, Sigma = D)
-  
+  # 2. Update μ and β
+  A1 <- cbind(1, z)
+  w  <- 1/z
+  D_inv <- t(A1 * w) %*% A1 + prior_prec_beta
+  D <- solve(D_inv)
+  d <- t(A1) %*% (y * w) + prior_prec_beta %*% prior_mean_beta
+  b <- mvrnorm(1, D %*% d, D)
   mu   <- b[1]
   beta <- b[2]
   
-  # ----- 3. Gamma-GIG update for IG parameters -----
+  # 3. Gamma-TN update
   z_bar   <- mean(z)
   z_bar_r <- mean(1/z)
-  nu      <- n + 2 * xi
-  u1      <- n * z_bar + omega * eta
-  u2      <- n + omega - chi
-  u3      <- n * z_bar_r + omega / eta
   
-  mu_ig <- rgig(1, lambda = (n-1)/2, chi = phi * u1, psi = phi * u3)
+  shape_d <- alpha0 + n/2
+  rate_d  <- beta0 + z_bar_r/2 + (omega^2)/(2*theta) - 
+    ((omega + n*theta)^2) / (2*theta * (1 + n*z_bar*theta))
+  rate_d  <- max(rate_d, 1e-5)
   
-  rate_phi <- u1/(2*mu_ig) - u2 + u3*mu_ig/2
-  phi      <- rgamma(1, shape = (nu + 1)/2, rate = rate_phi)
+  delta2 <- rgamma(1, shape_d, rate_d)
+  delta  <- sqrt(max(delta2, 1e-6))
   
-  # Back-transform to usual NIG parameters
-  gamma <- sqrt(phi / mu_ig)
-  delta <- sqrt(mu_ig * phi)
+  mean_g <- (omega + n*theta) * delta / (1 + n*z_bar*theta)
+  sd_g   <- sqrt(theta / (1 + n*z_bar*theta))
+  
+  gamma <- rnorm(1, mean_g, sd_g)
+  if (gamma <= 0) gamma <- abs(mean_g) * 0.5 + 0.05
   
   # Store
-  beta_store[i, ] <- c(mu, beta)
+  beta_store[i,]  <- c(mu, beta)
   gamma_store[i]  <- gamma
   delta_store[i]  <- delta
 }
 
-# ====================== POSTERIOR SUMMARY ======================
-beta_post  <- beta_store[keep_idx, ]
-gamma_post <- gamma_store[keep_idx]
-delta_post <- delta_store[keep_idx]
+# ====================== POSTERIOR ======================
+keep <- seq(burn + 1, n_iter, by = thin)
+beta_post  <- beta_store[keep, ]
+gamma_post <- gamma_store[keep]
+delta_post <- delta_store[keep]
 
-cat("\n=== Posterior medians (Gamma-GIG) ===\n")
-cat("μ     =", round(median(beta_post[,1]), 5), "\n")
-cat("β     =", round(median(beta_post[,2]), 5), "\n")
-cat("γ     =", round(median(gamma_post), 5), "\n")
-cat("δ     =", round(median(delta_post), 5), "\n")
-cat("α     =", round(median(sqrt(gamma_post^2 + beta_post[,2]^2)), 5), "\n")
+beta_post_median <- apply(beta_post, 2, median)
+gamma_post_median <- median(gamma_post)
+delta_post_median <- median(delta_post)
 
-# ====================== ONE-DAY-AHEAD PREDICTIVE DISTRIBUTION ======================
-n_pred <- 10000
-predictions <- numeric(n_pred)
+cat("Posterior Medians:\n")
+cat("μ     :", round(beta_post_median[1], 6), "\n")
+cat("β     :", round(beta_post_median[2], 6), "\n")
+cat("γ     :", round(gamma_post_median, 4), "\n")
+cat("δ     :", round(delta_post_median, 5), "\n")
+cat("α     :", round(sqrt(gamma_post_median^2 + beta_post_median[2]^2), 4), "\n\n")
 
-for (j in 1:n_pred) {
-  idx  <- sample(1:length(keep_idx), 1)
-  mu_j <- beta_post[idx, 1]
-  beta_j <- beta_post[idx, 2]
-  gamma_j <- gamma_post[idx]
-  delta_j <- delta_post[idx]
-  
-  # New mixing variable from IG(γ, δ)
-  z_new <- rgig(1, lambda = -0.5, chi = delta_j^2, psi = gamma_j^2)
-  
-  # Predictive draw
-  mu_new <- mu_j + beta_j * z_new
-  predictions[j] <- rnorm(1, mean = mu_new, sd = sqrt(z_new))
-}
+# ====================== PLOT (Normal scale - should look good now) ======================
+par(mfrow = c(1,1), mar = c(5,5,4,2))
 
-cat("\nTomorrow's SPY return forecast (posterior predictive):\n")
-cat("Expected return :", round(mean(predictions)*100, 3), "%\n")
-cat("95% credible interval :", round(quantile(predictions, c(0.025, 0.975))*100, 3), "%\n")
-cat("5% VaR (loss) :", round(quantile(predictions, 0.05)*100, 3), "%\n")
+hist(y, breaks = 250, probability = TRUE, col = rgb(0.8,0.9,1,0.7), border = "white",
+     main = "SPY Daily Returns vs Fitted NIG (Gamma-TN)",
+     xlab = "Daily Return", ylab = "Density")
+
+x_seq <- seq(min(y)-0.02, max(y)+0.02, length.out = 2000)
+lines(x_seq, dnig(x_seq, 
+                  mu = beta_post_median[1],
+                  beta = beta_post_median[2],
+                  delta = delta_post_median,
+                  alpha = sqrt(gamma_post_median^2 + beta_post_median[2]^2)),
+      col = "red", lwd = 3.5)
+
+lines(density(y, bw = "SJ", adjust = 1.1), col = "black", lwd = 3)
+
+legend("topright", legend = c("Observed SPY returns", "Fitted NIG (Gamma-TN)"),
+       col = c("black", "red"), lwd = 3, bty = "n")
