@@ -1,162 +1,121 @@
-#Garch
-
-# Using linear regression
 library(quantmod)
-library(GIGrvg)
-library(fBasics)
-library(MASS)
-library(moments)
-library(tseries)
+library(GIGrvg)   # rgig
+library(MASS)     # mvrnorm
 
-# Get SPY data for the MCMC
-getSymbols("SPY", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
-SPY_adj <- Ad(SPY)
-R_t <- (SPY_adj / lag(SPY_adj)) - 1
-y <- R_t[-1] # Remove NA
+set.seed(42)
+
+# ====================== DATA (SPY daily returns) ======================
+getSymbols("TSLA", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
+SPY_adj <- Ad(TSLA)
+y <- as.numeric(dailyReturn(SPY_adj)[-1])   # simple returns, drop first NA
 n <- length(y)
+
+cat("Number of observations:", n, "\n")
+
+# ====================== PRIORS (Gamma-GIG - same as paper) ======================
+xi    <- 0.01      # phi ~ Gamma(xi, chi)
+chi   <- 0.01
+eta   <- 5         # prior mean for mu_ig
+omega <- 0.001
+
+# Diffuse prior on (μ, β)  -- variances = 50 as in the FTARET example
+prior_mean_beta <- c(0, 0)
+prior_prec_beta <- diag(1/50, 2)          # 2 parameters: μ and β_skew
+
+# ====================== MCMC SETTINGS ======================
 n_iter <- 100000
-burnin <- 20000
+burn   <- 20000
+thin   <- 50
+keep_idx <- seq(burn + 1, n_iter, by = thin)
 
-# Covariates
-getSymbols("DGS10", src = "FRED", from = "2014-12-01", to = "2025-12-31")
-yield_change <- diff(DGS10)
-yield_change <- na.omit(yield_change)
-common_dates <- intersect(index(yield_change), index(R_t[-1]))
-yield_aligned <- as.vector(yield_change[common_dates])
-y <- as.vector(R_t[-1][common_dates])
-n <- length(y)
+# Storage
+beta_store  <- matrix(NA, n_iter, 2)      # columns: mu, beta_skew
+gamma_store <- numeric(n_iter)
+delta_store <- numeric(n_iter)
 
+# Initial values
+mu    <- mean(y)
+beta  <- 0
+gamma <- 1
+delta <- 1
+mu_ig <- delta / gamma
+phi   <- 1
 
-# Matrix X and Y
-
-#X <- matrix(1, nrow = length(y), ncol = 1) # Add a column of ones for the intercept for now we only have 1 for intercept
-X <- cbind(1, yield_aligned)
-beta_store <- matrix(NA, nrow = n_iter, ncol = ncol(X)+1) # Initialize the matrix to store the beta coefficients for each iteration, we have ncol(X)+1 because we have the intercept and the slope
-b <- rep(0, length = ncol(X)+1) # Initialize the coefficients vector (0 cause we dont know where it starts)
-prior_mean_beta <- rep(0, length = ncol(X)+1) # Prior mean for beta
-prior_prec_beta <- diag(1/100, ncol(X)+1) # Prior precision for beta
-gamma_store = rep(NA, n_iter) # Initialize the shape parameters
-delta_store = rep(NA, n_iter) # Initialize the scale parameter
-z <- rep(1, length = length(y)) # Initialize z for the GIG distribution
-z_store <- matrix(NA,nrow=n_iter,ncol=n) # Store z values for each iteration
-
-xi <- 0.01 # for gamma φ
-x_prior <- 0.01 # for gamma φ
-
-phi <- 1 # for IG distribution
-eta <- var(y) # prior mean for μ in the IG distribution
-omega <- 0.001 # Prior how strongly we believe in the prior mean for μ in the IG distribution
-
-gamma <- 1 
-delta <- 1 
-mu_ig <- delta/gamma # prior mean for the μ parameter in the IG distribution
-
-
+# ====================== MCMC LOOP (Gamma-GIG) ======================
 for (i in 1:n_iter) {
   
-  # Z draws
-  residuals <- y - X %*% b[1:ncol(X)] # Calculate residuals
-  q_val <- 1 + (residuals/delta)^2
-  alpha_param <- sqrt(gamma^2 + b[ncol(X)+1]^2) # alpha parameter
-  z <- rgig(n = length(y), lambda = -1, chi = delta * sqrt(q_val), psi = alpha_param) # Sample z from GIG distribution
+  # ----- 1. Sample latent z_i -----
+  residuals <- y - mu                       # y - μ   (no covariates)
+  chi_z     <- residuals^2 + delta^2        # δ_GIG²
+  psi_z     <- gamma^2 + beta^2             # α²
+  z <- rgig(n = n, lambda = -1, chi = chi_z, psi = psi_z)
   
-  # d,D matrices and coefficient generation
-  A1    <- cbind(X, z)                    # n x (k+1) design matrix
-  w <- as.vector(1/z)            # n x n precision vector diag(1/z1,...,1/zn)
-  A1w <- A1 * w                  # n x (k+1) weighted design matrix for less computation
-  C2inv <- prior_prec_beta                # (k+1) x (k+1) prior precision matrix
+  # ----- 2. Update (μ, β) via heteroscedastic regression -----
+  X_full <- cbind(1, z)                     # design matrix: intercept + z
+  w      <- 1 / z
+  D_inv  <- t(X_full * w) %*% X_full + prior_prec_beta
+  D      <- solve(D_inv)
+  d      <- t(X_full) %*% (y * w) + prior_prec_beta %*% prior_mean_beta
+  b      <- mvrnorm(1, mu = D %*% d, Sigma = D)
   
-  D_inv <- t(A1w) %*% A1 + C2inv # (k+1) x (k+1) posterior precision matrix
-  D     <- solve(D_inv) # (k+1) x (k+1) posterior covariance matrix
-  d <- t(A1) %*% (y*w) + C2inv %*% prior_mean_beta # posterior mean
+  mu   <- b[1]
+  beta <- b[2]
   
-  b     <- mvrnorm(1, mu = D %*% d, Sigma = D) # draw 1 sample of beta from posterior MVN(D*d, D)
+  # ----- 3. Gamma-GIG update for IG parameters -----
+  z_bar   <- mean(z)
+  z_bar_r <- mean(1/z)
+  nu      <- n + 2 * xi
+  u1      <- n * z_bar + omega * eta
+  u2      <- n + omega - chi
+  u3      <- n * z_bar_r + omega / eta
   
-  # Find statistic values to compute gamma delta
-  z_bar <- mean(z) 
-  z_bar_r <- mean(1/z) 
-  nu <- n + 2*xi 
-  u1 <- n*z_bar + omega*eta 
-  u2 <- n + omega - xi
-  u3 <- n*z_bar_r + omega/eta
+  mu_ig <- rgig(1, lambda = (n-1)/2, chi = phi * u1, psi = phi * u3)
   
-  # Use scheme 1 Gamma-GIG
-  mu_ig <- rgig(1, lambda =(n-1)/2, chi = sqrt(phi*u1), psi=sqrt(phi*u3)) # Sample μ from GIG distribution
-  phi <- rgamma(1,shape=(nu+1)/2,rate=u1/(2*mu_ig)-u2+u3*mu_ig/2) # Sample φ from gamma distribution
+  rate_phi <- u1/(2*mu_ig) - u2 + u3*mu_ig/2
+  phi      <- rgamma(1, shape = (nu + 1)/2, rate = rate_phi)
   
-  #Convert to Gamma,Delta
+  # Back-transform to usual NIG parameters
   gamma <- sqrt(phi / mu_ig)
   delta <- sqrt(mu_ig * phi)
   
-  beta_store[i,] <- b # Store the sampled beta coefficients
-  gamma_store[i] <- gamma # Store the sampled gamma values
-  delta_store[i] <- delta # Store the sampled delta values
-  z_store[i,] <- z # Store the sampled z values
-  
+  # Store
+  beta_store[i, ] <- c(mu, beta)
+  gamma_store[i]  <- gamma
+  delta_store[i]  <- delta
 }
 
-# Discard burn-in samples
-thin       <- 10
-keep_idx   <- seq(burnin + thin, n_iter, by = thin)
+# ====================== POSTERIOR SUMMARY ======================
 beta_post  <- beta_store[keep_idx, ]
 gamma_post <- gamma_store[keep_idx]
 delta_post <- delta_store[keep_idx]
-z_post_mean <- colMeans(z_store[keep_idx, ])
 
-# Trace Plots
-par(mfrow=c(2,2))
-plot(beta_post[,1], type='l', main='Trace Plot for Intercept', xlab='Iteration', ylab='Value')
-plot(beta_post[,2], type='l', main='Trace Plot for Slope', xlab='Iteration', ylab='Value')
-plot(gamma_post, type='l', main='Trace Plot for Gamma', xlab='Iteration', ylab='Value')
-plot(delta_post, type='l', main='Trace Plot for Delta', xlab='Iteration', ylab='Value')
+cat("\n=== Posterior medians (Gamma-GIG) ===\n")
+cat("μ     =", round(median(beta_post[,1]), 5), "\n")
+cat("β     =", round(median(beta_post[,2]), 5), "\n")
+cat("γ     =", round(median(gamma_post), 5), "\n")
+cat("δ     =", round(median(delta_post), 5), "\n")
+cat("α     =", round(median(sqrt(gamma_post^2 + beta_post[,2]^2)), 5), "\n")
 
-# Plot zi over time
-par(mfrow=c(1,1))
-plot(z_post_mean, type='l', main='Mean Z values over time', xlab='Time', ylab='Mean Z value')
+# ====================== ONE-DAY-AHEAD PREDICTIVE DISTRIBUTION ======================
+n_pred <- 10000
+predictions <- numeric(n_pred)
 
+for (j in 1:n_pred) {
+  idx  <- sample(1:length(keep_idx), 1)
+  mu_j <- beta_post[idx, 1]
+  beta_j <- beta_post[idx, 2]
+  gamma_j <- gamma_post[idx]
+  delta_j <- delta_post[idx]
+  
+  # New mixing variable from IG(γ, δ)
+  z_new <- rgig(1, lambda = -0.5, chi = delta_j^2, psi = gamma_j^2)
+  
+  # Predictive draw
+  mu_new <- mu_j + beta_j * z_new
+  predictions[j] <- rnorm(1, mean = mu_new, sd = sqrt(z_new))
+}
 
-# Posterior Density Plots with statistics
-par(mfrow=c(2,2))
-
-# Intercept
-plot(density(beta_post[,1]), main='Posterior Density for Intercept', xlab='Value', ylab='Density')
-abline(v=mean(beta_post[,1]), col='red', lwd=2)
-abline(v=quantile(beta_post[,1], c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Slope
-plot(density(beta_post[,2]), main='Posterior Density for Slope', xlab='Value', ylab='Density')
-abline(v=mean(beta_post[,2]), col='red', lwd=2)
-abline(v=quantile(beta_post[,2], c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Gamma
-plot(density(gamma_post), main='Posterior Density for Gamma', xlab='Value', ylab='Density')
-abline(v=mean(gamma_post), col='red', lwd=2)
-abline(v=quantile(gamma_post, c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Delta
-plot(density(delta_post), main='Posterior Density for Delta', xlab='Value', ylab='Density')
-abline(v=mean(delta_post), col='red', lwd=2)
-abline(v=quantile(delta_post, c(0.025, 0.975)), col='blue', lwd=2, lty=2)
-
-# Summary
-
-# Summary for Regression Coefficients (Intercept and Beta/Skewness)
-# We calculate Mean, and the 95% Credible Interval (2.5% and 97.5%)
-beta_summary <- data.frame(
-  Mean = colMeans(beta_post),
-  Lower_95 = apply(beta_post, 2, quantile, probs = 0.025),
-  Upper_95 = apply(beta_post, 2, quantile, probs = 0.975)
-)
-rownames(beta_summary) <- c("Intercept", "Yield Change", "Skewness (Beta)")
-
-# Summary for NIG Scale and Shape
-nig_summary <- data.frame(
-  Parameter = c("Gamma (Shape)", "Delta (Scale)"),
-  Mean = c(mean(gamma_post), mean(delta_post)),
-  Lower_95 = c(quantile(gamma_post, 0.025), quantile(delta_post, 0.025)),
-  Upper_95 = c(quantile(gamma_post, 0.975), quantile(delta_post, 0.975))
-)
-
-print(beta_summary)
-print(nig_summary)
-
+cat("\nTomorrow's SPY return forecast (posterior predictive):\n")
+cat("Expected return :", round(mean(predictions)*100, 3), "%\n")
+cat("95% credible interval :", round(quantile(predictions, c(0.025, 0.975))*100, 3), "%\n")
+cat("5% VaR (loss) :", round(quantile(predictions, 0.05)*100, 3), "%\n")
