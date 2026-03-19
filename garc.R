@@ -1,177 +1,246 @@
-#Garch
+# Bayesian estimation of heteroscedastic regression
 
-# Using linear regression
 library(quantmod)
 library(GIGrvg)
-library(fBasics)
 library(MASS)
-
+library(parallel)
+library(fBasics)
 #set.seed(42) # for reproducibility
 
 # Get SPY data for the MCMC
-getSymbols("SPY", from = "2014-12-01", to = "2025-12-31", periodicity = "daily")
-SPY_adj <- Ad(SPY)
-R_t <- (SPY_adj / lag(SPY_adj)) - 1
-y <- R_t[-1] # Remove NA
-y_sd <- sd(as.numeric(y_raw))
+
+ticker <- "TSLA"
+start_date <- "2015-12-01"
+end_date <- "2025-12-31"
+
+data_raw <- getSymbols(ticker, from = start_date, to = end_date, periodicity = "daily", auto.assign = FALSE)
+y <- 100 * as.numeric(dailyReturn(Ad(data_raw), type = "arithmetic"))[-1]  # ← percent returns
 n <- length(y)
 
-n_iter <- 300000
-burnin <- 50000
-thin  <- 100
+N_iteration <- 300000
+burnin <- 40000
+thin  <- 120
+n_pred <- 50000
 
-# Covariates
 
-X <- matrix(1, nrow = length(y), ncol = 1) # Add a column of ones for the intercept for now we only have 1 for intercept
-b <- rep(0, length = ncol(X)+1) # Initialize the coefficients vector (0 cause we dont know where it starts)
-z <- rep(1, length = length(y)) # Initialize z for the GIG distribution
-prior_mean_beta <- rep(0, length = ncol(X)+1) # Prior mean for beta
-prior_prec_beta <- diag(1/100, ncol(X)+1) # Prior precision for beta
+# Initialize Variables/Matrices
+X <- matrix(1, nrow = n, ncol = 1) # Add a column of ones for the intercept for now we only have 1 for intercept
+b <- rep(0, ncol(X)+1) # Initialize the coefficients vector (0 cause we don't know where it starts)
+z <- rep(1, n) # Initialize z for the GIG distribution
+prior_mean_beta <- rep(0, ncol(X)+1) # Prior mean for beta
+prior_prec_beta <- diag(1/50, ncol(X)+1) # Prior precision for beta
 
 # Storage Matrices
-gamma_store = rep(NA, n_iter) # Initialize the shape parameters
-delta_store = rep(NA, n_iter) # Initialize the scale parameter
-beta_store <- matrix(NA, nrow = n_iter, ncol = ncol(X)+1) # Initialize the matrix to store the beta coefficients for each iteration, we have ncol(X)+1 because we have the intercept and the slope
-z_store <- matrix(NA,nrow=n_iter,ncol=n) # Store z values for each iteration
+gamma_store = rep(NA, N_iteration) # Initialize the shape parameters ~ tail heaviness
+delta_store = rep(NA, N_iteration) # Initialize the scale parameter ~ spread
+beta_store <- matrix(NA, nrow = N_iteration, ncol = ncol(X)+1) # Initialize the matrix to store the beta coefficients for each iteration, we have ncol(X)+1 because we have the intercept and the slope
+z_store <- matrix(NA,nrow=N_iteration, ncol = n) # Store z values for each iteration
 
 
 # Priors
+omega <- 30 # Prior how strongly we believe in eta 20-40 balanced, 100 sticks more to prior, 5 trusts the data prior guess for variance
+eta <- var(y) * 1.0 # average variance so we use var(y) to adapt to all stocks
+xi <- 0.01 # for φ|μ Shape of the Gamma prior
+x_prior <- 0.01 # for φ||μ Rate of the Gamma prior
 
-xi <- 0.01 # for gamma φ
-x_prior <- 0.01
-phi <- 1 # for IG distribution
-eta <- var(y) # prior mean for μ in the IG distribution
-omega <- 0.001 # Prior how strongly we believe in the prior mean for μ in the IG distribution
+gamma <- 1 # for μ|φ STARTING POINT OF GAMMA IN THE GIG DISTRIBUTION
+delta <- 1 # for μ|φ STARTING POINT OF DELTA IN THE GIG DISTRIBUTION
+phi_GAMMA <- 1 # for μ|φ STARTING POINT OF PHI IN THE GAMMA DISTRIBUTION
 
-gamma <- 1 
-delta <- 1 
-mu_ig <- delta/gamma # prior mean for the μ parameter in the IG distribution
+m_GIG <- delta/gamma # prior mean for the μ parameter in the IG distribution
+nu <- n + 2*xi # for φ||μ
+u2 <- n + omega - x_prior # you kfor φ|μ
 
 
-for (i in 1:n_iter) {
+#diagnosis
+mu_ig_store <- rep(NA, N_iteration)
+phi_store <- rep(NA, N_iteration)
+
+for (i in 1:N_iteration){
   
   # Z draws
-  residuals <- y - X %*% b[1:ncol(X)] # Calculate residuals y-μ1
+  residuals <- y - X %*% b[1:ncol(X)]
   q_val <- 1 + (residuals/delta)^2
-  alpha_param <- sqrt(gamma^2 + b[ncol(X)+1]^2) # alpha parameter
-  z <- rgig(n = length(y), lambda = -1, chi = (delta * sqrt(q_val))^2, psi = alpha_param^2) # Sample z from GIG distribution
+  alpha_param <- sqrt(gamma^2 + b[ncol(X)+1]^2)
+  
+  z <- numeric(n)
+  for(j in 1:n) {
+    z[j] <- rgig(1, lambda = -1, 
+                 chi = delta^2 * q_val[j], 
+                 psi = alpha_param^2)
+  }
   
   # d,D matrices and coefficient generation
-  A1    <- cbind(X, z)                    # n x (k+1) design matrix
-  w <- as.vector(1/z)            # n x n precision vector diag(1/z1,...,1/zn)
-  A1w <- A1 * w                  # n x (k+1) weighted design matrix for less computation
-  C2inv <- prior_prec_beta                # (k+1) x (k+1) prior precision matrix
+  A1 <- cbind(X, z)
+  w <- as.vector(1/z)
+  A1w <- A1 * w
+  C2inv <- prior_prec_beta 
   
-  D_inv <- t(A1w) %*% A1 + C2inv # (k+1) x (k+1) posterior precision matrix
-  D     <- solve(D_inv) # (k+1) x (k+1) posterior covariance matrix
-  d <- t(A1) %*% (y*w) + C2inv %*% prior_mean_beta # posterior mean
+  D_inv <- t(A1w) %*% A1 + C2inv
+  D <- solve(D_inv)
+  d <- t(A1) %*% (y*w) + C2inv %*% prior_mean_beta
   
-  b     <- mvrnorm(1, mu = D %*% d, Sigma = D) # draw 1 sample of beta from posterior MVN(D*d, D)
+  b <- mvrnorm(1, mu = D %*% d, Sigma = D)
   
-  # Find statistic values to compute gamma delta
-  z_bar <- mean(z) 
-  z_bar_r <- mean(1/z) 
-  nu <- n + 2*xi 
-  u1 <- n*z_bar + omega*eta 
-  u2 <- n + omega - x_prior
-  u3 <- n*z_bar_r + omega/eta
+  # Use scheme 1 from paper the Gamma-GIG
+  u1 <- sum(z) + omega*eta 
+  u3 <- sum(1/z) + omega/eta
   
-  # Use scheme 1 Gamma-GIG
-  mu_ig <- rgig(1, lambda = (n-1)/2, chi = phi*u1, psi = phi*u3) # Sample μ from GIG distribution
-  phi <- rgamma(1,shape=(nu+1)/2,rate=u1/(2*mu_ig)-u2+u3*mu_ig/2) # Sample φ from gamma distribution
+  m_GIG <- rgig(1, lambda = (n-1)/2, chi = phi_GAMMA*u1, psi = phi_GAMMA*u3)
+  phi_GAMMA <- rgamma(1,shape=(nu+1)/2,rate=u1/(2*m_GIG)-u2+u3*m_GIG/2) 
   
   #Convert to Gamma,Delta
-  gamma <- sqrt(phi / mu_ig)
-  delta <- sqrt(mu_ig * phi)
+  gamma <- sqrt(phi_GAMMA / m_GIG)
+  delta <- sqrt(m_GIG * phi_GAMMA)
   
-  beta_store[i,] <- b # Store the sampled beta coefficients
-  gamma_store[i] <- gamma # Store the sampled gamma values
-  delta_store[i] <- delta # Store the sampled delta values
-  z_store[i,] <- z # Store the sampled z values
+  mu_ig_store[i] <- m_GIG
+  phi_store[i] <- phi_GAMMA
+  
+  
+  beta_store[i,] <- b
+  gamma_store[i] <- gamma
+  delta_store[i] <- delta
+  z_store[i,] <- z
   
 }
 
-# Discard burn-in samples
-keep_idx   <- seq(burnin + thin, n_iter, by = thin)
-beta_post  <- beta_store[keep_idx, ]
+
+# Discard burn-in samples and thin the chain
+keep_idx <- seq(burnin + thin, N_iteration, by = thin)
+beta_post <- beta_store[keep_idx, ]
 gamma_post <- gamma_store[keep_idx]
 delta_post <- delta_store[keep_idx]
 z_post_mean <- colMeans(z_store[keep_idx, ])
 
-# Predictive Distribution
-n_pred <- 150000
-predictions <- numeric(n_pred)
+# Posterior Distribution
 
-beta_post_median <- apply(beta_post, 2, median)
-gamma_post_median <- median(gamma_post)
-delta_post_median <- median(delta_post)
+predictions <- numeric(n_pred) # Post median
+beta_median <- apply(beta_post, 2, median)# Post median
+gamma_median <- median(gamma_post)# Post median
+delta_median <- median(delta_post)# Post median
+alpha_median <- sqrt(gamma_median^2 + beta_median[2]^2)
+
+par(mfrow = c(1, 1), mar = c(5, 5, 4, 2))
+
+hist(y, breaks = 100, probability = TRUE,
+     col = rgb(0.7, 0.7, 0.7, 0.6), border = "white",
+     main = paste(ticker, "Daily Returns: Data vs Fitted NIG Posterior"),
+     xlab = "Daily Return (%)",
+     ylab = "Density")
+
+# Add empirical density
+lines(density(y, adjust = 1.5), col = "black", lwd = 3)
+
+# Add fitted NIG density
+x_seq <- seq(min(y) - 5, max(y) + 5, length.out = 1000)
+nig_density <- dnig(x_seq,
+                    mu = beta_median[1],
+                    beta = beta_median[2],
+                    delta = delta_median,
+                    alpha = alpha_median)
+
+lines(x_seq, nig_density, col = "red", lwd = 3, lty = 2)
+
+legend("topright",
+       legend = c("Empirical Data", "Fitted NIG"),
+       col = c("black", "red"),
+       lwd = c(3, 3),
+       lty = c(1, 2),
+       bty = "n",
+       cex = 1.2)
+
+
+# Predictive 
 
 for(j in 1:n_pred) {
-  z_new <- rgig(1, lambda = -0.5, 
-                chi = delta_post_median^2, 
-                psi = gamma_post_median^2 + beta_post_median[2]^2)
-  mu_j  <- beta_post_median[1] + beta_post_median[2] * z_new
+  z_new <- rgig(1, lambda = -0.5,
+                chi = delta_median^2,
+                psi = gamma_median^2 + beta_median[2]^2)
+  mu_j <- beta_median[1] + beta_median[2] * z_new
   predictions[j] <- rnorm(1, mu_j, sqrt(z_new))
 }
 
+cat("Real TSLA:\n")
+cat("  SD:        ", sd(y), "%\n")
+cat("  Skewness:  ", skewness(y), "\n")
+cat("  Kurtosis:  ", kurtosis(y), "\n\n")
 
+cat("Predicted:\n")
+cat("  SD:        ", sd(predictions), "%\n")
+cat("  Skewness:  ", skewness(predictions), "\n")
+cat("  Kurtosis:  ", kurtosis(predictions), "\n")
 
-cat("Tomorrow's SPY return forecast:\n")
-cat("Expected:  ", round(mean(predictions)*100, 3), "%\n")
-cat("95% CI:    ", round(quantile(predictions, c(0.025,0.975))*100, 3), "%\n")
-cat("5% VaR:    ", round(quantile(predictions, 0.05)*100, 3), "%\n")
+# Predictive Plot
 
-
-# plot
 par(mfrow = c(1,1), mar = c(5,5,4,2))
-
-hist(y, breaks = 300, probability = TRUE, 
-     col = rgb(0.8, 0.9, 1, 0.6), border = "white",
-     main = "SPY Daily Returns vs Fitted NIG (Gamma-GIG)",
-     xlab = "Daily Return", ylab = "Density",
-     ylim = c(0, 75))
-
-lines(density(y, bw = "SJ", adjust = 1.1, n = 1024), 
-      col = "black", lwd = 3.2)
-
-x_seq <- seq(min(y)-0.02, max(y)+0.02, length.out = 2000)
-
-lines(x_seq, 
-      dnig(x_seq, 
-           mu    = beta_post_median[1],
-           beta  = beta_post_median[2],
-           delta = delta_post_median,
-           alpha = sqrt(gamma_post_median^2 + beta_post_median[2]^2)),
-      col = "red", lwd = 4)
-
+hist(y, breaks = 100, probability = TRUE,
+     col = rgb(0.7, 0.7, 0.7, 0.6), border = "white",
+     main = paste(ticker, "Returns: Real vs Predicted"),
+     xlab = "Daily Return (%)",
+     xlim = c(min(c(y, predictions)), max(c(y, predictions))))
+hist(predictions, breaks = 100, probability = TRUE,
+     col = rgb(1, 0, 0, 0.3), border = NA, add = TRUE)
+lines(density(y, adjust = 1.5), col = "black", lwd = 3)
+lines(density(predictions, adjust = 1.5), col = "red", lwd = 3, lty = 2)
 legend("topright", 
-       legend = c("Observed SPY returns", "Fitted NIG"),
-       col = c("black", "red"), lwd = c(3.2, 4), bty = "n", cex = 1.15)
+       legend = c("Real Data", "Predicted"),
+       col = c("black", "red"), 
+       lwd = c(3, 3), lty = c(1, 2),
+       bty = "n")
 
 
 
 
-# Trace to see convergence
-mcmc_samples <- as.mcmc(cbind(beta_post[,1], beta_post[,2], gamma_post, delta_post))
-colnames(mcmc_samples) <- c("mu", "beta_skew", "gamma", "delta")
-par(mfrow = c(2,2), mar = c(4,4,3,1))
-traceplot(mcmc_samples[, "mu"],        main = "Traceplot: μ (location)", ylab = "μ")
-traceplot(mcmc_samples[, "beta_skew"], main = "Traceplot: β (skewness)", ylab = "β")
-traceplot(mcmc_samples[, "gamma"],     main = "Traceplot: γ", ylab = "γ")
-traceplot(mcmc_samples[, "delta"],     main = "Traceplot: δ", ylab = "δ")
-
-# Multiple MCMC
-median_mu    <- median(beta_post[, 1])
-median_beta  <- median(beta_post[, 2])
-median_gamma <- median(gamma_post)
-median_delta <- median(delta_post)
-median_alpha <- median(sqrt(gamma_post^2 + beta_post[, 2]^2))
-
-cat("=== Posterior Medians (from MCMC) ===\n")
-cat("μ     (location)     :", round(median_mu,    6), "\n")
-cat("β     (skewness)     :", round(median_beta,  6), "\n")
-cat("γ     (shape)        :", round(median_gamma, 5), "\n")
-cat("δ     (scale)        :", round(median_delta, 5), "\n")
-cat("α     (tail param)   :", round(median_alpha, 5), "\n\n")
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# THEN do the debugging
+cat("\n=== DEBUGGING GAMMA-GIG CONVERSION ===\n")
+cat("First 10 iterations:\n")
+for(i in 1:10) {
+  cat(sprintf("Iter %d: mu_ig=%.6f, phi=%.6f, gamma=%.6f, delta=%.6f\n",
+              i, mu_ig_store[i], phi_store[i], gamma_store[i], delta_store[i]))
+}
+
+cat("\nLast 10 iterations:\n")
+for(i in (N_iteration-9):N_iteration) {
+  cat(sprintf("Iter %d: mu_ig=%.6f, phi=%.6f, gamma=%.6f, delta=%.6f\n",
+              i, mu_ig_store[i], phi_store[i], gamma_store[i], delta_store[i]))
+}
+
+cat("\nPost burn-in medians:\n")
+cat("  mu_ig: ", median(mu_ig_store[keep_idx]), "\n")
+cat("  phi:   ", median(phi_store[keep_idx]), "\n")
+cat("  gamma: ", median(gamma_post), "\n")
+cat("  delta: ", median(delta_post), "\n")
+
+# Check the conversion formula
+mu_test <- median(mu_ig_store[keep_idx])
+phi_test <- median(phi_store[keep_idx])
+gamma_test <- sqrt(phi_test / mu_test)
+delta_test <- sqrt(mu_test * phi_test)
+
+cat("\nManual conversion check:\n")
+cat("  gamma should be: ", gamma_test, "\n")
+cat("  delta should be: ", delta_test, "\n")
