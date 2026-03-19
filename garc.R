@@ -5,11 +5,11 @@ library(GIGrvg)
 library(MASS)
 library(parallel)
 library(fBasics)
-#set.seed(42) # for reproducibility
+set.seed(42) # for reproducibility
 
 # Get SPY data for the MCMC
 
-ticker <- "TSLA"
+ticker <- "^SP500TR"
 start_date <- "2015-12-01"
 end_date <- "2025-12-31"
 
@@ -188,7 +188,22 @@ legend("topright",
        lwd = c(3, 3), lty = c(1, 2),
        bty = "n")
 
+# VaR calculation of the predictive distribution at 95% confidence level
+VaR_5 <- quantile(predictions, probs = 0.05) # left side downside risk
+VaR_95 <- quantile(predictions, probs = 0.95) # right side upside risk
+VaR_1 <- quantile(predictions, probs = 0.01) # left side extreme downside risk
+ES_5 <- mean(predictions[predictions <= VaR_5]) # Expected Shortfall at 5% 
 
+# Outputs
+cat("\n=== RISK METRICS ===\n")
+cat("Expected Return:     ", round(mean(predictions), 3), "%\n")
+cat("Volatility (SD):     ", round(sd(predictions), 3), "%\n\n")
+
+cat("5% VaR (1 day):      ", round(VaR_5, 3), "%\n")
+cat("1% VaR (1 day):      ", round(VaR_1, 3), "%\n")
+cat("95% VaR (upside):    ", round(VaR_95, 3), "%\n\n")
+
+cat("5% Expected Shortfall:", round(ES_5, 3), "%\n")
 
 
 
