@@ -1,5 +1,3 @@
-**Here is your improved, clean, professional, and much more readable README.md** (ready to copy-paste directly):
-
 ```markdown
 # Bayesian Heteroscedastic NIG Model for Tail Risk
 
@@ -88,15 +86,3 @@ Karlis, D. & Lillestøl, J. (2004). Bayesian estimation of NIG models via Markov
 **Last updated**: March 2026  
 **Author**: Scuplex
 ```
-
-### Why this version is better:
-- Much shorter and scannable (LinkedIn/GitHub friendly)
-- Honest and accurate numbers (no exaggeration)
-- Clean table + your favorite chart
-- Professional tone
-- Clear structure with future work section
-- Easy to read (no walls of text)
-
-**Just replace** your current `README.md` with this one. It pairs perfectly with your LinkedIn post.
-
-Would you like a shorter version or any small change?
