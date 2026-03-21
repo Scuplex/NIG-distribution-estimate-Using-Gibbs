@@ -1,0 +1,21 @@
+# Skiadopoulos - Epilogis
+library(readr)
+library(quantmod)
+
+# Download TSLA Monthly data
+getSymbols("^SP500TR", from = "2020-01-01", to = "2025-12-31", periodicity = "daily") # we get the daily cause yahoo finance gives the mothly the first price of the month.
+AAPL_returns <- monthlyReturn(Ad(SP500TR))[-1, ]
+
+# Combine the Dataset
+end_data <- data.frame(
+  TSLA = as.numeric(TSLA_returns),
+  RF   = RF_dataset[1009:1194, 2][[1]]
+)
+
+# Mean - RP
+TSLA_mean <- mean(end_data$TSLA)
+TSLA_RP   <- mean(end_data$TSLA - end_data$RF)
+
+# Print 
+print(TSLA_mean)
+print(TSLA_RP)
