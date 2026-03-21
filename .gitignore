@@ -7,4 +7,4 @@
 **/.DS_Store
 .AppleDouble
 .LSOverride
-.RDataTmp
+.RDataTmp# Allow specific plots for README
