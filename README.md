@@ -26,6 +26,20 @@ This code fits a **Normal-Inverse Gaussian (NIG) distribution** to stock returns
 
 ---
 
+## 📊 Visualizations
+
+### Distribution Comparison: NIG vs Normal
+![Distribution Comparison](distribution_comparison.png)
+
+The NIG model (red) captures the heavy tails much better than the Normal distribution (blue). Notice how the Normal curve underestimates the probability of extreme events.
+
+### Posterior Predictive Check
+![Posterior Predictive](posterior_predictive.png)
+
+The model predictions (red) closely match the real data distribution (black), validating that our Bayesian estimation captured the true data-generating process.
+
+---
+
 ## 📐 The Model
 
 ### Simple Version
