@@ -39,7 +39,7 @@ z_store <- matrix(NA,nrow=N_iteration, ncol = n) # Store z values for each itera
 
 # Priors
 omega <- 30 # Prior how strongly we believe in eta 20-40 balanced, 100 sticks more to prior, 5 trusts the data prior guess for variance
-eta <- var(y) * 1.0 # average variance so we use var(y) to adapt to all stocks
+eta <- var(y)*1.0 # average variance so we use var(y) to adapt to all stocks
 xi <- 0.01 # for φ|μ Shape of the Gamma prior
 x_prior <- 0.01 # for φ||μ Rate of the Gamma prior
 
@@ -206,56 +206,6 @@ cat("95% VaR (upside):    ", round(VaR_95, 3), "%\n\n")
 cat("5% Expected Shortfall:", round(ES_5, 3), "%\n")
 
 
+# Convergance
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# THEN do the debugging
-cat("\n=== DEBUGGING GAMMA-GIG CONVERSION ===\n")
-cat("First 10 iterations:\n")
-for(i in 1:10) {
-  cat(sprintf("Iter %d: mu_ig=%.6f, phi=%.6f, gamma=%.6f, delta=%.6f\n",
-              i, mu_ig_store[i], phi_store[i], gamma_store[i], delta_store[i]))
-}
-
-cat("\nLast 10 iterations:\n")
-for(i in (N_iteration-9):N_iteration) {
-  cat(sprintf("Iter %d: mu_ig=%.6f, phi=%.6f, gamma=%.6f, delta=%.6f\n",
-              i, mu_ig_store[i], phi_store[i], gamma_store[i], delta_store[i]))
-}
-
-cat("\nPost burn-in medians:\n")
-cat("  mu_ig: ", median(mu_ig_store[keep_idx]), "\n")
-cat("  phi:   ", median(phi_store[keep_idx]), "\n")
-cat("  gamma: ", median(gamma_post), "\n")
-cat("  delta: ", median(delta_post), "\n")
-
-# Check the conversion formula
-mu_test <- median(mu_ig_store[keep_idx])
-phi_test <- median(phi_store[keep_idx])
-gamma_test <- sqrt(phi_test / mu_test)
-delta_test <- sqrt(mu_test * phi_test)
-
-cat("\nManual conversion check:\n")
-cat("  gamma should be: ", gamma_test, "\n")
-cat("  delta should be: ", delta_test, "\n")
