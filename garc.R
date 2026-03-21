@@ -6,6 +6,7 @@ library(MASS)
 library(parallel)
 library(fBasics)
 set.seed(42) # for reproducibility
+mem.maxVSize(64000)
 
 # Get SPY data for the MCMC
 
@@ -17,9 +18,9 @@ data_raw <- getSymbols(ticker, from = start_date, to = end_date, periodicity = "
 y <- 100 * as.numeric(dailyReturn(Ad(data_raw), type = "arithmetic"))[-1]  # ← percent returns
 n <- length(y)
 
-N_iteration <- 300000
-burnin <- 40000
-thin  <- 120
+N_iteration <- 500000
+burnin <- 150000
+thin  <- 200
 n_pred <- 50000
 
 
@@ -38,8 +39,8 @@ z_store <- matrix(NA,nrow=N_iteration, ncol = n) # Store z values for each itera
 
 
 # Priors
-omega <- 30 # Prior how strongly we believe in eta 20-40 balanced, 100 sticks more to prior, 5 trusts the data prior guess for variance
-eta <- var(y)*1.0 # average variance so we use var(y) to adapt to all stocks
+omega <- 1 # Prior how strongly we believe in eta 20-40 balanced, 100 sticks more to prior, 5 trusts the data prior guess for variance
+eta <- var(y) # average variance so we use var(y) to adapt to all stocks
 xi <- 0.01 # for φ|μ Shape of the Gamma prior
 x_prior <- 0.01 # for φ||μ Rate of the Gamma prior
 
@@ -114,7 +115,7 @@ z_post_mean <- colMeans(z_store[keep_idx, ])
 
 # Posterior Distribution
 
-predictions <- numeric(n_pred) # Post median
+predictions <- numeric(n_pred)
 beta_median <- apply(beta_post, 2, median)# Post median
 gamma_median <- median(gamma_post)# Post median
 delta_median <- median(delta_post)# Post median
