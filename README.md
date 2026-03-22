@@ -130,7 +130,7 @@ source("NIG_Code_hetero.R")
 
 ### Change the Stock
 ```r
-# Edit this line in garc.R:
+# Edit this line in NIG_Code_hetero.R:
 ticker <- "SPY"    # Or "AAPL", "TSLA", etc.
 ```
 
