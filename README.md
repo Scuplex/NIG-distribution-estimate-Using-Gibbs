@@ -116,7 +116,7 @@ install.packages(c("quantmod", "GIGrvg", "MASS", "fBasics"))
 ### Run the Code
 ```r
 # 1. Load the script
-source("garc.R")
+source("NIG_Code_hetero.R")
 
 # 2. The code automatically:
 #    - Downloads S&P 500 data
